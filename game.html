@@ -1,606 +1,293 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Combined 3D (Three.js) and 2D Raycast Maze</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-    :root { --panel-bg: rgba(0,0,0,0.45); --btn:#28a; --muted:#ddd; }
-    html,body{height:100%;margin:0;background:#0d0f14;color:#fff;font-family:Arial, sans-serif;overflow:hidden}
-    header { position:absolute; left:12px; top:12px; z-index:20; display:flex; gap:8px; align-items:center; }
-    .modeBtn { padding:8px 12px; border-radius:6px; background:var(--panel-bg); color:#fff; border:1px solid rgba(255,255,255,0.05); cursor:pointer; }
-    .modeBtn.active { background:var(--btn); box-shadow:0 2px 8px rgba(0,0,0,0.5); }
-    .hint { margin-left:8px; color:var(--muted); font-size:13px; background:var(--panel-bg); padding:8px 10px; border-radius:6px; }
-    main { position:absolute; inset:0; display:flex; align-items:stretch; justify-content:stretch; }
-    .panel { flex:1; position:relative; display:none; }
-    .panel.active { display:block; }
-    /* Controls overlay inside each panel */
-    .overlay { position:absolute; left:12px; top:12px; z-index:10; background:var(--panel-bg); padding:8px 10px; border-radius:6px; display:flex; align-items:center; gap:10px; }
-    .startBtn { padding:8px 10px; border-radius:6px; background:var(--btn); color:#fff; cursor:pointer; user-select:none; border:none; }
-    .win { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:34px; color:#fff; background: rgba(0,0,0,0.6); visibility:hidden; z-index:30; }
-    /* Canvas and three container fill */
-    #threeContainer, #rayCanvas { width:100%; height:100%; display:block; }
-    /* minimap adjustments for ray panel */
-    #rayCanvas { background:#000; }
-    footer { position:absolute; right:12px; bottom:12px; background:var(--panel-bg); padding:8px 10px; border-radius:6px; color:var(--muted); font-size:13px; }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>3D Raycaster (JavaScript)</title>
+<style>
+  html,body{height:100%;margin:0;background:#111;color:#ddd;font-family:system-ui,Segoe UI,Roboto}
+  #info{position:fixed;left:12px;top:12px;z-index:2;background:rgba(0,0,0,0.4);padding:8px;border-radius:6px}
+  canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated}
+  a{color:#6cf}
+  .small{font-size:12px;color:#bbb}
+</style>
 </head>
 <body>
-  <header>
-    <button id="btnThree" class="modeBtn active">Three.js 3D</button>
-    <button id="btnRay" class="modeBtn">2D Raycast</button>
-    <div class="hint">Switch modes — then click Start inside the active panel</div>
-  </header>
+<div id="info">
+  <strong>3D Raycaster</strong>
+  <div class="small">WASD to move, Space/Ctrl to up/down, Click to lock pointer and look, R to reset</div>
+  <div class="small">Resolution: <span id="res"></span> • FPS: <span id="fps"></span></div>
+</div>
+<canvas id="c"></canvas>
+<script>
+// Simple CPU ray tracer (ray caster) demo
+// - Sphere & plane intersections
+// - Phong shading with shadows
+// - Simple reflections
+// - Camera movement (WASD) + pointer lock mouse look
+// Keep it compact and readable.
 
-  <main>
-    <!-- Three.js Panel -->
-    <section id="panelThree" class="panel active" aria-label="Three.js 3D maze">
-      <div class="overlay">
-        <button id="startThree" class="startBtn">Click to start (Pointer Lock)</button>
-        <div style="color:var(--muted)">W/A/S/D to move • mouse to look • Space to sprint</div>
-      </div>
-      <div id="threeContainer"></div>
-      <div id="winThree" class="win">🎉 You escaped the 3D maze! Switch mode or reload to play again.</div>
-    </section>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
 
-    <!-- Raycast Panel -->
-    <section id="panelRay" class="panel" aria-label="2D Raycast maze">
-      <div class="overlay">
-        <button id="startRay" class="startBtn">Click to start (Pointer Lock)</button>
-        <div style="color:var(--muted)">W/A/S/D to move • mouse to look • Space to sprint</div>
-      </div>
-      <canvas id="rayCanvas"></canvas>
-      <div id="winRay" class="win">🎉 You escaped the 2D maze! Switch mode or reload to play again.</div>
-    </section>
-  </main>
+let scale = 2; // pixel scale factor -> increase for speed, decrease for quality
+let w, h, aspect;
+function resize() {
+  // internal render resolution
+  w = Math.floor(window.innerWidth / scale);
+  h = Math.floor(window.innerHeight / scale);
+  canvas.width = w;
+  canvas.height = h;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  aspect = w / h;
+  document.getElementById('res').textContent = `${w}×${h} (scale ${scale})`;
+}
+window.addEventListener('resize', resize);
+resize();
 
-  <footer>Combined demo — Three.js UMD + Canvas Raycaster (single file)</footer>
+// utilities
+function clamp(x, a=0, b=1){ return Math.max(a, Math.min(b, x)); }
+function vec(x,y,z){ return {x:x,y:y,z:z}; }
+function add(a,b){ return vec(a.x+b.x,a.y+b.y,a.z+b.z); }
+function sub(a,b){ return vec(a.x-b.x,a.y-b.y,a.z-b.z); }
+function mul(a,s){ return vec(a.x*s,a.y*s,a.z*s); }
+function dot(a,b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
+function cross(a,b){ return vec(a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x); }
+function length(v){ return Math.sqrt(dot(v,v)); }
+function normalize(v){ const L = length(v)||1; return mul(v, 1/L); }
+function reflect(I, N){ // I incoming, N normal
+  // R = I - 2*(I·N)*N
+  const d = 2*dot(I,N);
+  return sub(I, mul(N, d));
+}
+function mix(a,b,t){ return add(mul(a,1-t), mul(b,t)); }
 
-  <!-- Three.js UMD -->
-  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
-  <script src="https://unpkg.com/three@0.152.2/examples/js/controls/PointerLockControls.js"></script>
+// scene
+const spheres = [
+  {center: vec(-1.5, 0.5, -6), radius: 1.0, color: vec(0.9,0.2,0.2), spec: 60, refl: 0.25},
+  {center: vec(0.5, -0.2, -5), radius: 1.2, color: vec(0.2,0.9,0.3), spec: 20, refl: 0.15},
+  {center: vec(2.0, 0.8, -7), radius: 1.0, color: vec(0.2,0.35,0.9), spec: 150, refl: 0.5},
+];
+const plane = {y: -1.4, colorA: vec(0.9,0.9,0.9), colorB: vec(0.18,0.18,0.18)}; // checker plane
+const lights = [
+  {pos: vec(-5,5,-3), color: vec(1,1,0.95), intensity: 1.1},
+  {pos: vec(5,4,-6), color: vec(0.7,0.8,1), intensity: 0.6}
+];
 
-  <script>
-  /******************************
-   * Mode switching UI
-   ******************************/
-  const btnThree = document.getElementById('btnThree');
-  const btnRay = document.getElementById('btnRay');
-  const panelThree = document.getElementById('panelThree');
-  const panelRay = document.getElementById('panelRay');
+// camera
+const camera = {
+  pos: vec(0, 0.2, 1.5),
+  yaw: 0.0, pitch: 0.0,
+  fov: 60 * Math.PI/180
+};
 
-  btnThree.addEventListener('click', () => switchMode('three'));
-  btnRay.addEventListener('click', () => switchMode('ray'));
+// controls
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if(e.key==='r') resetCamera(); });
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+canvas.addEventListener('click', ()=> canvas.requestPointerLock?.());
+window.addEventListener('mousemove', e => {
+  if (document.pointerLockElement === canvas) {
+    camera.yaw -= e.movementX * 0.002;
+    camera.pitch -= e.movementY * 0.002;
+    camera.pitch = clamp(camera.pitch, -Math.PI/2 + 0.01, Math.PI/2 - 0.01);
+  }
+});
 
-  let currentMode = 'three';
-  function switchMode(mode) {
-    if (mode === currentMode) return;
-    // teardown previous
-    if (currentMode === 'three') destroyThree();
-    else destroyRay();
-    // show new
-    currentMode = mode;
-    if (mode === 'three') {
-      btnThree.classList.add('active'); btnRay.classList.remove('active');
-      panelThree.classList.add('active'); panelRay.classList.remove('active');
-      initThree();
-    } else {
-      btnRay.classList.add('active'); btnThree.classList.remove('active');
-      panelRay.classList.add('active'); panelThree.classList.remove('active');
-      initRay();
+function resetCamera(){
+  camera.pos = vec(0,0.2,1.5); camera.yaw = 0; camera.pitch = 0;
+}
+
+// ray-sphere intersection
+function intersectSphere(ro, rd, sph){
+  const L = sub(sph.center, ro);
+  const tca = dot(L, rd);
+  const d2 = dot(L,L) - tca*tca;
+  const r2 = sph.radius*sph.radius;
+  if (d2 > r2) return null;
+  const thc = Math.sqrt(r2 - d2);
+  let t0 = tca - thc;
+  let t1 = tca + thc;
+  if (t0 < 1e-4) t0 = t1;
+  if (t0 < 1e-4) return null;
+  return t0;
+}
+
+// ray-plane intersection (horizontal plane at y = plane.y)
+function intersectPlane(ro, rd, p){
+  if (Math.abs(rd.y) < 1e-6) return null;
+  const t = (p.y - ro.y) / rd.y;
+  return t > 1e-4 ? t : null;
+}
+
+// trace
+function trace(ro, rd, depth=0){
+  let tMin = Infinity;
+  let hit = null;
+  let hitType = null; // 'sphere'|'plane'
+  let hitObj = null;
+
+  // spheres
+  for (const s of spheres){
+    const t = intersectSphere(ro, rd, s);
+    if (t !== null && t < tMin){ tMin = t; hit = add(ro, mul(rd, t)); hitType='sphere'; hitObj=s; }
+  }
+  // plane
+  const tp = intersectPlane(ro, rd, plane);
+  if (tp !== null && tp < tMin){
+    tMin = tp; hit = add(ro, mul(rd, tp)); hitType='plane'; hitObj = plane;
+  }
+
+  if (!hit) {
+    // sky gradient
+    const t = 0.5 * (rd.y + 1.0);
+    return mix(vec(0.2,0.3,0.6), vec(0.95,0.98,1.0), clamp(t));
+  }
+
+  // shading
+  let baseColor = vec(0,0,0);
+  let N;
+  if (hitType==='sphere'){
+    N = normalize(sub(hit, hitObj.center));
+    baseColor = hitObj.color;
+  } else {
+    // plane normal is up
+    N = vec(0,1,0);
+    // checker pattern
+    const checkerScale = 1.0;
+    const check = (Math.floor(hit.x/checkerScale) + Math.floor(hit.z/checkerScale)) % 2;
+    baseColor = (check===0) ? hitObj.colorA : hitObj.colorB;
+  }
+
+  // ambient
+  let color = mul(baseColor, 0.06);
+
+  // lighting
+  for (const L of lights){
+    const lightDir = normalize(sub(L.pos, hit));
+    // shadow check
+    const shadowOrigin = add(hit, mul(N, 1e-4));
+    let shadow = false;
+    // quick distance to light
+    const distToLight = length(sub(L.pos, hit));
+    // cast shadow ray
+    // test spheres
+    for (const s of spheres){
+      const t = intersectSphere(shadowOrigin, lightDir, s);
+      if (t !== null && t < distToLight) { shadow = true; break; }
+    }
+    // test plane (avoid self)
+    if (!shadow){
+      const tp2 = intersectPlane(shadowOrigin, lightDir, plane);
+      if (tp2 !== null && tp2 < distToLight) {
+        // if plane is below the light and between, it shadows
+        shadow = true;
+      }
+    }
+    if (shadow) continue;
+
+    // diffuse
+    const diff = Math.max(0, dot(N, lightDir));
+    // specular
+    const viewDir = normalize(mul(ro, -1)); // approximate view from origin direction
+    const half = normalize(add(lightDir, normalize(mul(ro, -1))));
+    const spec = Math.pow(Math.max(0, dot(N, reflect(mul(rd,-1), N))), hitType==='sphere' ? hitObj.spec/50 : 10);
+
+    const lightAtt = L.intensity / (1 + 0.12 * distToLight * distToLight);
+    const lambert = mul(mul(baseColor, diff), lightAtt);
+    const specCol = mul(L.color, spec * lightAtt);
+    color = add(color, lambert);
+    color = add(color, specCol);
+  }
+
+  // reflections
+  const reflectivity = (hitType==='sphere') ? hitObj.refl : 0.0;
+  if (reflectivity > 0 && depth < 2){
+    const R = reflect(rd, N);
+    const reflCol = trace(add(hit, mul(N, 1e-4)), R, depth+1);
+    color = mix(color, reflCol, reflectivity);
+  }
+
+  // tone mapping / clamp
+  return vec(clamp(color.x), clamp(color.y), clamp(color.z));
+}
+
+// render one frame (only when camera moved or continuously)
+let lastRenderCam = null;
+let renderId = 0;
+let lastT = performance.now();
+let fps = 0;
+function renderFrame(){
+  const imageData = ctx.createImageData(w, h);
+  const data = imageData.data;
+
+  // camera basis
+  const forward = vec(Math.cos(camera.pitch) * Math.sin(camera.yaw), Math.sin(camera.pitch), Math.cos(camera.pitch) * Math.cos(camera.yaw));
+  const right = normalize(cross(forward, vec(0,1,0)));
+  const up = normalize(cross(right, forward));
+
+  const fovScale = Math.tan(camera.fov * 0.5);
+  // for each pixel
+  let idx = 0;
+  for (let j=0;j<h;j++){
+    const v = (1 - 2*(j + 0.5) / h);
+    for (let i=0;i<w;i++){
+      const u = (2*(i + 0.5) / w - 1) * aspect;
+      // ray dir in world space
+      let rd = add(add(mul(right, u * fovScale), mul(up, v * fovScale)), forward);
+      rd = normalize(rd);
+
+      const col = trace(camera.pos, rd, 0);
+      // gamma
+      const gamma = 1/2.2;
+      data[idx++] = Math.floor(255 * Math.pow(clamp(col.x), gamma));
+      data[idx++] = Math.floor(255 * Math.pow(clamp(col.y), gamma));
+      data[idx++] = Math.floor(255 * Math.pow(clamp(col.z), gamma));
+      data[idx++] = 255;
     }
   }
 
-  /******************************
-   * Shared Maze generator (DFS)
-   ******************************/
-  function generateMaze(cols, rows) {
-    const grid = new Array(cols*rows).fill(0).map(() => ({ visited:false, walls:[true,true,true,true] }));
-    function idx(x,y){ return x + y*cols; }
-    const stack = [];
-    let cx = 0, cy = 0;
-    grid[idx(cx,cy)].visited = true;
-    stack.push([cx,cy]);
-    while (stack.length) {
-      const [x,y] = stack[stack.length-1];
-      const neighbors = [];
-      const dirs = [[0,-1,0],[1,0,1],[0,1,2],[-1,0,3]];
-      for (let i=0;i<4;i++){
-        const nx = x+dirs[i][0], ny = y+dirs[i][1];
-        if (nx>=0 && nx<cols && ny>=0 && ny<rows && !grid[idx(nx,ny)].visited) neighbors.push([nx,ny,i]);
-      }
-      if (neighbors.length) {
-        const [nx,ny,dir] = neighbors[Math.floor(Math.random()*neighbors.length)];
-        grid[idx(x,y)].walls[dir] = false;
-        grid[idx(nx,ny)].walls[(dir+2)%4] = false;
-        grid[idx(nx,ny)].visited = true;
-        stack.push([nx,ny]);
-      } else stack.pop();
-    }
-    return grid;
-  }
+  ctx.putImageData(imageData, 0, 0);
 
-  /******************************
-   * THREE.JS MODE
-   ******************************/
-  // Parameters
-  const COLS = 15, ROWS = 15, CELL_SIZE = 8, WALL_HEIGHT = 6, WALL_THICK = 0.4;
+  // fps
+  const now = performance.now();
+  fps = Math.round(1000 / (now - lastT));
+  lastT = now;
+  document.getElementById('fps').textContent = fps;
+}
 
-  let threeState = null; // holds scene, renderer, controls, etc.
+// camera update & main loop
+let last = performance.now();
+function update(){
+  const now = performance.now();
+  const dt = (now - last) / 1000;
+  last = now;
 
-  const startThreeBtn = document.getElementById('startThree');
-  startThreeBtn.addEventListener('click', () => {
-    if (threeState && threeState.controls) threeState.controls.lock();
-  });
+  // movement
+  const speed = 3.0;
+  const forward = vec(Math.cos(camera.yaw), 0, Math.sin(camera.yaw));
+  const right = vec(Math.sin(camera.yaw + Math.PI/2), 0, Math.cos(camera.yaw + Math.PI/2));
+  if (keys['w']) camera.pos = add(camera.pos, mul(forward, speed*dt));
+  if (keys['s']) camera.pos = add(camera.pos, mul(forward, -speed*dt));
+  if (keys['a']) camera.pos = add(camera.pos, mul(right, -speed*dt));
+  if (keys['d']) camera.pos = add(camera.pos, mul(right, speed*dt));
+  if (keys[' ']) camera.pos.y += speed*dt; // space up
+  if (keys['control']) camera.pos.y -= speed*dt; // ctrl down
 
-  function initThree() {
-    // create minimal scene, camera, renderer
-    const container = document.getElementById('threeContainer');
-    container.innerHTML = ''; // clear
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x20252f);
-    const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
-    camera.position.set(0, WALL_HEIGHT/2 - 0.2, 0);
+  // simple animate a light
+  const t = performance.now() * 0.001;
+  lights[0].pos.x = -5 + Math.sin(t)*2;
+  lights[0].pos.z = -3 + Math.cos(t)*2;
 
-    const renderer = new THREE.WebGLRenderer({ antialias:true });
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(window.devicePixelRatio || 1);
-    renderer.domElement.id = 'threeCanvas';
-    container.appendChild(renderer.domElement);
+  // render
+  renderFrame();
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.7); hemi.position.set(0,50,0); scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6); dir.position.set(-10,20,10); scene.add(dir);
+  requestAnimationFrame(update);
+}
 
-    // pointer controls
-    const controls = new THREE.PointerLockControls(camera, renderer.domElement);
-    controls.addEventListener('lock', () => { startThreeBtn.style.display = 'none'; });
-    controls.addEventListener('unlock', () => { startThreeBtn.style.display = 'inline-block'; });
-
-    // generate maze and build walls
-    const maze = generateMaze(COLS, ROWS);
-    const wallMaterial = new THREE.MeshStandardMaterial({color:0x999999});
-    const floorMaterial = new THREE.MeshStandardMaterial({color:0x333a46});
-    const exitMaterial = new THREE.MeshStandardMaterial({color:0x00ff66, emissive:0x004422, emissiveIntensity:0.6});
-
-    const floorGeometry = new THREE.PlaneGeometry(COLS*CELL_SIZE, ROWS*CELL_SIZE);
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.rotation.x = -Math.PI/2;
-    floor.position.set((COLS-1)/2*CELL_SIZE, 0, (ROWS-1)/2*CELL_SIZE);
-    scene.add(floor);
-
-    const wallMeshes = [];
-    const wallGeomV = new THREE.BoxGeometry(CELL_SIZE + WALL_THICK, WALL_HEIGHT, WALL_THICK);
-    const wallGeomH = new THREE.BoxGeometry(WALL_THICK, WALL_HEIGHT, CELL_SIZE + WALL_THICK);
-
-    for (let y=0;y<ROWS;y++){
-      for (let x=0;x<COLS;x++){
-        const cell = maze[x + y*COLS];
-        const centerX = x*CELL_SIZE;
-        const centerZ = y*CELL_SIZE;
-        if (cell.walls[0]) {
-          const m = new THREE.Mesh(wallGeomV, wallMaterial);
-          m.position.set(centerX, WALL_HEIGHT/2, centerZ - CELL_SIZE/2);
-          scene.add(m); wallMeshes.push(m);
-        }
-        if (cell.walls[1]) {
-          const m = new THREE.Mesh(wallGeomH, wallMaterial);
-          m.position.set(centerX + CELL_SIZE/2, WALL_HEIGHT/2, centerZ);
-          scene.add(m); wallMeshes.push(m);
-        }
-        if (cell.walls[2]) {
-          const m = new THREE.Mesh(wallGeomV, wallMaterial);
-          m.position.set(centerX, WALL_HEIGHT/2, centerZ + CELL_SIZE/2);
-          scene.add(m); wallMeshes.push(m);
-        }
-        if (cell.walls[3]) {
-          const m = new THREE.Mesh(wallGeomH, wallMaterial);
-          m.position.set(centerX - CELL_SIZE/2, WALL_HEIGHT/2, centerZ);
-          scene.add(m); wallMeshes.push(m);
-        }
-      }
-    }
-
-    // center scene
-    const offsetX = - (COLS-1)/2*CELL_SIZE;
-    const offsetZ = - (ROWS-1)/2*CELL_SIZE;
-    scene.traverse(obj => { if (obj.isMesh) { obj.position.x += offsetX; obj.position.z += offsetZ; } });
-
-    // compute wall boxes
-    const wallBoxes = [];
-    wallMeshes.forEach(m => {
-      m.updateMatrixWorld(true);
-      const b = new THREE.Box3().setFromObject(m);
-      b.expandByScalar(0.05);
-      wallBoxes.push(b);
-    });
-
-    // place player at entrance
-    controls.getObject().position.set(0*CELL_SIZE + offsetX, WALL_HEIGHT/2 - 0.2, 0*CELL_SIZE + offsetZ);
-    scene.add(controls.getObject());
-
-    // exit
-    const exitX = (COLS-1)*CELL_SIZE + offsetX;
-    const exitZ = (ROWS-1)*CELL_SIZE + offsetZ;
-    const exitGeom = new THREE.BoxGeometry(CELL_SIZE*0.6, WALL_HEIGHT*0.6, CELL_SIZE*0.6);
-    const exitMesh = new THREE.Mesh(exitGeom, exitMaterial);
-    exitMesh.position.set(exitX, WALL_HEIGHT*0.3, exitZ);
-    scene.add(exitMesh);
-    const exitBox = new THREE.Box3().setFromObject(exitMesh);
-    const winDiv = document.getElementById('winThree');
-
-    // movement vars
-    const velocity = new THREE.Vector3();
-    const direction = new THREE.Vector3();
-    let moveForward=false, moveBackward=false, moveLeft=false, moveRight=false, sprint=false;
-
-    function onKeyDown(e){
-      if (e.code === 'KeyW') moveForward=true;
-      if (e.code === 'KeyS') moveBackward=true;
-      if (e.code === 'KeyA') moveLeft=true;
-      if (e.code === 'KeyD') moveRight=true;
-      if (e.code === 'Space') sprint=true;
-    }
-    function onKeyUp(e){
-      if (e.code === 'KeyW') moveForward=false;
-      if (e.code === 'KeyS') moveBackward=false;
-      if (e.code === 'KeyA') moveLeft=false;
-      if (e.code === 'KeyD') moveRight=false;
-      if (e.code === 'Space') sprint=false;
-    }
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-
-    const playerRadius = 0.6;
-    function collides(position) {
-      const playerSphere = new THREE.Sphere(new THREE.Vector3(position.x, position.y, position.z), playerRadius);
-      for (const b of wallBoxes) if (b.intersectsSphere(playerSphere)) return true;
-      return false;
-    }
-
-    // animation loop
-    let rafId = null;
-    let prevTime = performance.now();
-    function animateThree() {
-      rafId = requestAnimationFrame(animateThree);
-      const time = performance.now();
-      const delta = (time - prevTime) / 1000;
-      prevTime = time;
-
-      if (controls.isLocked) {
-        const speed = sprint ? 12 : 5;
-        velocity.x -= velocity.x * 10.0 * delta;
-        velocity.z -= velocity.z * 10.0 * delta;
-
-        direction.z = Number(moveForward) - Number(moveBackward);
-        direction.x = Number(moveRight) - Number(moveLeft);
-        direction.normalize();
-
-        if (moveForward || moveBackward) velocity.z -= direction.z * speed * delta;
-        if (moveLeft || moveRight) velocity.x -= direction.x * speed * delta;
-
-        const forward = new THREE.Vector3();
-        controls.getDirection(forward);
-        const yaw = Math.atan2(forward.x, forward.z);
-        const sinYaw = Math.sin(yaw), cosYaw = Math.cos(yaw);
-        const moveX = (velocity.x * cosYaw) + (velocity.z * sinYaw);
-        const moveZ = (velocity.z * cosYaw) - (velocity.x * sinYaw);
-
-        const obj = controls.getObject();
-        const proposed = obj.position.clone();
-        proposed.x += moveX * delta;
-        proposed.z += moveZ * delta;
-        proposed.y = obj.position.y;
-
-        if (!collides(proposed)) obj.position.copy(proposed);
-        else {
-          const tryX = obj.position.clone(); tryX.x = proposed.x;
-          const tryZ = obj.position.clone(); tryZ.z = proposed.z;
-          if (!collides(tryX)) obj.position.x = tryX.x;
-          else if (!collides(tryZ)) obj.position.z = tryZ.z;
-        }
-
-        if (exitBox.containsPoint(obj.position)) {
-          controls.unlock();
-          winDiv.style.visibility = 'visible';
-        }
-      }
-      renderer.render(scene, camera);
-    }
-    animateThree();
-
-    // handle resize
-    function onThreeResize(){
-      const w = container.clientWidth, h = container.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w,h);
-    }
-    window.addEventListener('resize', onThreeResize);
-
-    // store state for teardown
-    threeState = { scene, camera, renderer, controls, rafId, onThreeResize, onKeyDown, onKeyUp, winDiv };
-
-    // small camera offset
-    camera.position.y = WALL_HEIGHT/2 - 0.2;
-  }
-
-  function destroyThree() {
-    if (!threeState) return;
-    // unlock pointer if locked
-    try { threeState.controls.unlock(); } catch(e){}
-    // remove key listeners
-    window.removeEventListener('keydown', threeState.onKeyDown);
-    window.removeEventListener('keyup', threeState.onKeyUp);
-    window.removeEventListener('resize', threeState.onThreeResize);
-    // stop animation
-    if (threeState.rafId) cancelAnimationFrame(threeState.rafId);
-    // dispose renderer
-    try {
-      threeState.renderer.forceContextLoss();
-      threeState.renderer.domElement.remove();
-      threeState.renderer.dispose();
-    } catch(e){}
-    // hide win
-    if (threeState.winDiv) threeState.winDiv.style.visibility = 'hidden';
-    threeState = null;
-    // clear container
-    const container = document.getElementById('threeContainer');
-    container.innerHTML = '';
-    // show start button again
-    document.getElementById('startThree').style.display = 'inline-block';
-  }
-
-  // initialize default
-  initThree();
-
-  /******************************
-   * RAYCAST MODE (2D canvas)
-   ******************************/
-  const startRayBtn = document.getElementById('startRay');
-  const rayCanvas = document.getElementById('rayCanvas');
-  const rayCtx = rayCanvas.getContext('2d');
-
-  // ray state container
-  let rayState = null;
-
-  startRayBtn.addEventListener('click', async () => {
-    // request pointer lock on canvas
-    try { await rayCanvas.requestPointerLock(); } catch(e) { try { document.body.requestPointerLock(); } catch(e){} }
-  });
-
-  function initRay() {
-    // map generation
-    const maze = generateMaze(COLS, ROWS);
-    const mw = COLS*2+1, mh = ROWS*2+1;
-    const map = new Array(mh).fill(0).map(()=>new Array(mw).fill(1));
-    for (let y=0;y<ROWS;y++){
-      for (let x=0;x<COLS;x++){
-        const mx = x*2+1, my = y*2+1;
-        map[my][mx] = 0;
-        const cell = maze[x + y*COLS];
-        if (!cell.walls[0]) map[my-1][mx]=0;
-        if (!cell.walls[1]) map[my][mx+1]=0;
-        if (!cell.walls[2]) map[my+1][mx]=0;
-        if (!cell.walls[3]) map[my][mx-1]=0;
-      }
-    }
-
-    function resize() {
-      rayCanvas.width = panelRay.clientWidth;
-      rayCanvas.height = panelRay.clientHeight;
-    }
-    resize();
-    window.addEventListener('resize', resize);
-
-    // player (map coords)
-    const player = { x: 1 + 0.5, y: 1 + 0.5, angle:0, speed:2.5 };
-
-    // pointer lock mouse look
-    function onMouseMove(e) {
-      if (document.pointerLockElement === rayCanvas || document.pointerLockElement === document.body) {
-        player.angle += e.movementX * 0.0025;
-      }
-    }
-    document.addEventListener('mousemove', onMouseMove);
-
-    // keyboard
-    let moveF=false, moveB=false, moveL=false, moveR=false, sprint=false;
-    function onKeyDown(e){
-      if (e.code==='KeyW') moveF=true;
-      if (e.code==='KeyS') moveB=true;
-      if (e.code==='KeyA') moveL=true;
-      if (e.code==='KeyD') moveR=true;
-      if (e.code==='Space') sprint=true;
-    }
-    function onKeyUp(e){
-      if (e.code==='KeyW') moveF=false;
-      if (e.code==='KeyS') moveB=false;
-      if (e.code==='KeyA') moveL=false;
-      if (e.code==='KeyD') moveR=false;
-      if (e.code==='Space') sprint=false;
-    }
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-
-    function isWall(mx,my){ if (mx<0||my<0||mx>=mw||my>=mh) return true; return map[my][mx]===1; }
-
-    function tryMove(nx, ny) {
-      const pr = 0.22;
-      const check = [
-        [nx - pr, ny - pr],[nx + pr, ny - pr],[nx - pr, ny + pr],[nx + pr, ny + pr]
-      ];
-      for (const [cx,cy] of check) {
-        const mx = Math.floor(cx), my = Math.floor(cy);
-        if (isWall(mx,my)) return false;
-      }
-      player.x = nx; player.y = ny; return true;
-    }
-
-    // render loop (ray marching / DDA-ish)
-    const FOV = Math.PI/3;
-    const MAX_DIST = 30;
-    let running = true;
-    let last = performance.now();
-
-    function render() {
-      const w = rayCanvas.width, h = rayCanvas.height;
-      // sky & floor
-      rayCtx.fillStyle = '#87CEEB'; rayCtx.fillRect(0,0,w,h/2);
-      rayCtx.fillStyle = '#404040'; rayCtx.fillRect(0,h/2,w,h/2);
-
-      const numRays = Math.min(800, Math.floor(w));
-      const halfH = h/2;
-      for (let i=0;i<numRays;i++){
-        const rayScreenPos = (i/numRays)-0.5;
-        const rayAngle = player.angle + rayScreenPos * FOV;
-        // step along ray
-        let dist=0, hit=false, hx=0, hy=0;
-        const step = 0.02;
-        while (!hit && dist < MAX_DIST) {
-          dist += step;
-          hx = player.x + Math.cos(rayAngle)*dist;
-          hy = player.y + Math.sin(rayAngle)*dist;
-          if (isWall(Math.floor(hx), Math.floor(hy))) { hit=true; break; }
-        }
-        if (hit) {
-          const corrected = dist * Math.cos(rayAngle - player.angle);
-          const wallHeight = (1 / corrected) * (h) * 0.9;
-          const top = Math.floor(halfH - wallHeight/2);
-          const bottom = Math.floor(halfH + wallHeight/2);
-          const backx = hx - Math.cos(rayAngle)*0.01;
-          const backy = hy - Math.sin(rayAngle)*0.01;
-          let shade = 1.0;
-          if (!isWall(Math.floor(backx), Math.floor(backy))) shade = 0.85;
-          const darkness = Math.max(0.15, 1 - Math.min(1, corrected / 12)) * shade;
-          const col = Math.floor(200 * darkness);
-          rayCtx.fillStyle = `rgb(${col},${col},${col})`;
-          const x = i * (w/numRays);
-          const sliceW = Math.ceil(w/numRays) + 0.5;
-          rayCtx.fillRect(x, top, sliceW, bottom-top);
-          rayCtx.fillStyle = `rgba(0,0,0,${Math.min(0.6, corrected/30)})`;
-          rayCtx.fillRect(x, bottom, sliceW, h-bottom);
-        }
-      }
-
-      // minimap
-      const scale = 8;
-      const mapX = 8, mapY = 8;
-      rayCtx.save();
-      rayCtx.globalAlpha = 0.9;
-      const mapW = mw*scale+4, mapH = mh*scale+4;
-      rayCtx.fillStyle = 'rgba(0,0,0,0.4)';
-      rayCtx.fillRect(mapX-2, mapY-2, mapW, mapH);
-      for (let yy=0; yy<mh; yy++){
-        for (let xx=0; xx<mw; xx++){
-          rayCtx.fillStyle = map[yy][xx]===1 ? '#222' : '#eee';
-          rayCtx.fillRect(mapX + xx*scale, mapY + yy*scale, scale-1, scale-1);
-        }
-      }
-      rayCtx.fillStyle = 'red';
-      rayCtx.beginPath();
-      rayCtx.arc(mapX + player.x*scale, mapY + player.y*scale, 3, 0, Math.PI*2);
-      rayCtx.fill();
-      rayCtx.strokeStyle = 'red';
-      rayCtx.beginPath();
-      rayCtx.moveTo(mapX + player.x*scale, mapY + player.y*scale);
-      rayCtx.lineTo(mapX + (player.x + Math.cos(player.angle)*0.7)*scale, mapY + (player.y + Math.sin(player.angle)*0.7)*scale);
-      rayCtx.stroke();
-      rayCtx.restore();
-    }
-
-    function loop() {
-      if (!running) return;
-      const now = performance.now();
-      const dt = (now - last) / 1000; last = now;
-
-      let movSpeed = player.speed * (sprint ? 2.0 : 1.0);
-      let dx=0, dy=0;
-      if (moveF) { dx += Math.cos(player.angle) * movSpeed * dt; dy += Math.sin(player.angle) * movSpeed * dt; }
-      if (moveB) { dx -= Math.cos(player.angle) * movSpeed * dt; dy -= Math.sin(player.angle) * movSpeed * dt; }
-      if (moveL) { dx += Math.cos(player.angle - Math.PI/2) * movSpeed * dt; dy += Math.sin(player.angle - Math.PI/2) * movSpeed * dt; }
-      if (moveR) { dx += Math.cos(player.angle + Math.PI/2) * movSpeed * dt; dy += Math.sin(player.angle + Math.PI/2) * movSpeed * dt; }
-
-      if (dx !== 0 || dy !== 0) tryMove(player.x + dx, player.y + dy);
-      render();
-      rayState.raf = requestAnimationFrame(loop);
-    }
-    // expose controls & teardown
-    rayState = {
-      map, mw, mh, player, running: true, raf: null,
-      onMouseMove, onKeyDown, onKeyUp, resizeHandler: resize, tryMove
-    };
-    // but the keyboard/mouse handlers reference local booleans; we need to attach them properly
-    // re-define keyboard flags inside rayState for teardown convenience:
-    rayState._keyHandlers = { onKeyDown, onKeyUp };
-    // link those movement flags to outer variables by re-binding (closure used above)
-    // start loop
-    last = performance.now();
-    loop();
-
-    // watch for exit (player near bottom-right)
-    rayState.exitInterval = setInterval(() => {
-      const exitX = mw - 2 + 0.5, exitY = mh - 2 + 0.5;
-      const dx = player.x - exitX, dy = player.y - exitY;
-      if (Math.hypot(dx,dy) < 0.6) {
-        // show win
-        document.getElementById('winRay').style.visibility = 'visible';
-        // unlock pointer
-        try { document.exitPointerLock(); } catch(e){}
-        clearInterval(rayState.exitInterval);
-      }
-    }, 500);
-
-    // expose flags for keyboard to change
-    rayState._movement = { moveF:false, moveB:false, moveL:false, moveR:false, sprint:false };
-    // replace handlers with ones that toggle rayState._movement
-    window.removeEventListener('keydown', onKeyDown);
-    window.removeEventListener('keyup', onKeyUp);
-    function keyDownWrapper(e){
-      if (e.code==='KeyW') rayState._movement.moveF=true;
-      if (e.code==='KeyS') rayState._movement.moveB=true;
-      if (e.code==='KeyA') rayState._movement.moveL=true;
-      if (e.code==='KeyD') rayState._movement.moveR=true;
-      if (e.code==='Space') rayState._movement.sprint=true;
-      // keep local variables updated
-      moveF = rayState._movement.moveF; moveB = rayState._movement.moveB; moveL = rayState._movement.moveL; moveR = rayState._movement.moveR; sprint = rayState._movement.sprint;
-    }
-    function keyUpWrapper(e){
-      if (e.code==='KeyW') rayState._movement.moveF=false;
-      if (e.code==='KeyS') rayState._movement.moveB=false;
-      if (e.code==='KeyA') rayState._movement.moveL=false;
-      if (e.code==='KeyD') rayState._movement.moveR=false;
-      if (e.code==='Space') rayState._movement.sprint=false;
-      moveF = rayState._movement.moveF; moveB = rayState._movement.moveB; moveL = rayState._movement.moveL; moveR = rayState._movement.moveR; sprint = rayState._movement.sprint;
-    }
-    window.addEventListener('keydown', keyDownWrapper);
-    window.addEventListener('keyup', keyUpWrapper);
-    // replace onMouseMove attachment
-    // already added above, leave as-is
-  }
-
-  function destroyRay() {
-    if (!rayState) return;
-    rayState.running = false;
-    if (rayState.raf) cancelAnimationFrame(rayState.raf);
-    window.removeEventListener('resize', rayState.resizeHandler);
-    document.removeEventListener('mousemove', rayState.onMouseMove);
-    window.removeEventListener('keydown', rayState._keyHandlers.onKeyDown);
-    window.removeEventListener('keyup', rayState._keyHandlers.onKeyUp);
-    try { window.removeEventListener('keydown', null); window.removeEventListener('keyup', null); } catch(e){}
-    try { cancelAnimationFrame(rayState.raf); } catch(e){}
-    if (rayState.exitInterval) clearInterval(rayState.exitInterval);
-    document.getElementById('winRay').style.visibility = 'hidden';
-    rayState = null;
-    // exit pointer lock
-    try { document.exitPointerLock(); } catch(e){}
-    // clear canvas
-    rayCtx.clearRect(0,0,rayCanvas.width, rayCanvas.height);
-    // show start button again
-    document.getElementById('startRay').style.display = 'inline-block';
-  }
-
-  // ensure when page is unloaded we teardown
-  window.addEventListener('beforeunload', () => { destroyThree(); destroyRay(); });
-  </script>
+resetCamera();
+update();
+</script>
 </body>
 </html>
