@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>3D Raycaster (JavaScript)</title>
+<title>3D Raycaster Maze (JavaScript)</title>
 <style>
   html,body{height:100%;margin:0;background:#111;color:#ddd;font-family:system-ui,Segoe UI,Roboto}
   #info{position:fixed;left:12px;top:12px;z-index:2;background:rgba(0,0,0,0.4);padding:8px;border-radius:6px}
@@ -14,30 +14,23 @@
 </head>
 <body>
 <div id="info">
-  <strong>3D Raycaster</strong>
+  <strong>3D Raycaster Maze</strong>
   <div class="small">WASD to move, Space/Ctrl to up/down, Click to lock pointer and look, R to reset</div>
   <div class="small">Resolution: <span id="res"></span> • FPS: <span id="fps"></span></div>
 </div>
 <canvas id="c"></canvas>
 <script>
-// Simple CPU ray tracer (ray caster) demo
-// - Sphere & plane intersections
-// - Phong shading with shadows
-// - Simple reflections
-// - Camera movement (WASD) + pointer lock mouse look
-// Keep it compact and readable.
+// Starting from your raycaster; extended with AABB walls + maze map + collision
 
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d', { alpha: false });
 
-let scale = 2; // pixel scale factor -> increase for speed, decrease for quality
+let scale = 2;
 let w, h, aspect;
 function resize() {
-  // internal render resolution
   w = Math.floor(window.innerWidth / scale);
   h = Math.floor(window.innerHeight / scale);
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = w; canvas.height = h;
   canvas.style.width = window.innerWidth + 'px';
   canvas.style.height = window.innerHeight + 'px';
   aspect = w / h;
@@ -46,7 +39,6 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// utilities
 function clamp(x, a=0, b=1){ return Math.max(a, Math.min(b, x)); }
 function vec(x,y,z){ return {x:x,y:y,z:z}; }
 function add(a,b){ return vec(a.x+b.x,a.y+b.y,a.z+b.z); }
@@ -56,20 +48,16 @@ function dot(a,b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
 function cross(a,b){ return vec(a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x); }
 function length(v){ return Math.sqrt(dot(v,v)); }
 function normalize(v){ const L = length(v)||1; return mul(v, 1/L); }
-function reflect(I, N){ // I incoming, N normal
-  // R = I - 2*(I·N)*N
-  const d = 2*dot(I,N);
-  return sub(I, mul(N, d));
-}
+function reflect(I, N){ const d = 2*dot(I,N); return sub(I, mul(N, d)); }
 function mix(a,b,t){ return add(mul(a,1-t), mul(b,t)); }
 
-// scene
+// scene: keep some spheres as decoration, but main obstacles are wall boxes
 const spheres = [
-  {center: vec(-1.5, 0.5, -6), radius: 1.0, color: vec(0.9,0.2,0.2), spec: 60, refl: 0.25},
-  {center: vec(0.5, -0.2, -5), radius: 1.2, color: vec(0.2,0.9,0.3), spec: 20, refl: 0.15},
-  {center: vec(2.0, 0.8, -7), radius: 1.0, color: vec(0.2,0.35,0.9), spec: 150, refl: 0.5},
+  {center: vec(-1.5, 0.5, -6), radius: 0.9, color: vec(0.9,0.2,0.2), spec: 60, refl: 0.2},
+  {center: vec(2.0, 0.8, -7), radius: 0.9, color: vec(0.2,0.35,0.9), spec: 150, refl: 0.4},
 ];
-const plane = {y: -1.4, colorA: vec(0.9,0.9,0.9), colorB: vec(0.18,0.18,0.18)}; // checker plane
+
+const plane = {y: -1.4, colorA: vec(0.9,0.9,0.9), colorB: vec(0.18,0.18,0.18)};
 const lights = [
   {pos: vec(-5,5,-3), color: vec(1,1,0.95), intensity: 1.1},
   {pos: vec(5,4,-6), color: vec(0.7,0.8,1), intensity: 0.6}
@@ -77,7 +65,7 @@ const lights = [
 
 // camera
 const camera = {
-  pos: vec(0, 0.2, 1.5),
+  pos: vec(0, 0.2, 2.5),
   yaw: 0.0, pitch: 0.0,
   fov: 60 * Math.PI/180
 };
@@ -94,12 +82,44 @@ window.addEventListener('mousemove', e => {
     camera.pitch = clamp(camera.pitch, -Math.PI/2 + 0.01, Math.PI/2 - 0.01);
   }
 });
+function resetCamera(){ camera.pos = vec(0,0.2,2.5); camera.yaw = 0; camera.pitch = 0; }
 
-function resetCamera(){
-  camera.pos = vec(0,0.2,1.5); camera.yaw = 0; camera.pitch = 0;
+// -------------------- Maze (grid) -> wall boxes --------------------
+// 1 = wall, 0 = empty
+// small handcrafted maze; odd sizes with border walls
+const mazeGrid = [
+  [1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,0,1,0,0,0,0,0,1],
+  [1,0,1,0,1,0,1,1,1,0,1],
+  [1,0,1,0,0,0,0,0,1,0,1],
+  [1,0,1,1,1,1,1,0,1,0,1],
+  [1,0,0,0,0,0,1,0,1,0,1],
+  [1,1,1,1,1,0,1,0,1,0,1],
+  [1,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,0,0,0,0,0,1,0,1],
+  [1,0,0,0,1,0,0,0,0,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1],
+];
+const rows = mazeGrid.length;
+const cols = mazeGrid[0].length;
+const cellSize = 1.2;
+const wallHeight = 2.5;
+const walls = []; // array of AABBs
+
+// build walls array from grid
+for (let r=0;r<rows;r++){
+  for (let c=0;c<cols;c++){
+    if (mazeGrid[r][c]===1){
+      const x = (c - cols/2) * cellSize + cellSize/2;
+      const z = - (r * cellSize) - 1.0;
+      const min = vec(x - cellSize*0.5, plane.y, z - cellSize*0.5);
+      const max = vec(x + cellSize*0.5, plane.y + wallHeight, z + cellSize*0.5);
+      walls.push({min, max, color: vec(0.8,0.7,0.6), refl: 0.0, spec: 10});
+    }
+  }
 }
 
-// ray-sphere intersection
+// -------------------- Intersections --------------------
 function intersectSphere(ro, rd, sph){
   const L = sub(sph.center, ro);
   const tca = dot(L, rd);
@@ -114,33 +134,70 @@ function intersectSphere(ro, rd, sph){
   return t0;
 }
 
-// ray-plane intersection (horizontal plane at y = plane.y)
+// slab method for AABB-ray intersection
+function intersectBox(ro, rd, box){
+  let tmin = -Infinity, tmax = Infinity;
+  const axes = ['x','y','z'];
+  for (const a of axes){
+    const orig = ro[a], dir = rd[a];
+    if (Math.abs(dir) < 1e-8){
+      if (orig < box.min[a] || orig > box.max[a]) return null;
+      continue;
+    }
+    const invD = 1 / dir;
+    let t0 = (box.min[a] - orig) * invD;
+    let t1 = (box.max[a] - orig) * invD;
+    if (t0 > t1){ const tmp = t0; t0 = t1; t1 = tmp; }
+    if (t0 > tmin) tmin = t0;
+    if (t1 < tmax) tmax = t1;
+    if (tmax < tmin) return null;
+  }
+  if (tmin > 1e-4) return tmin;
+  if (tmax > 1e-4) return tmax;
+  return null;
+}
+
+// compute normal for AABB by checking which face we hit (by comparing hit point to box bounds)
+function boxNormalAt(box, p){
+  const eps = 1e-3;
+  if (Math.abs(p.x - box.min.x) < eps) return vec(-1,0,0);
+  if (Math.abs(p.x - box.max.x) < eps) return vec(1,0,0);
+  if (Math.abs(p.y - box.min.y) < eps) return vec(0,-1,0);
+  if (Math.abs(p.y - box.max.y) < eps) return vec(0,1,0);
+  if (Math.abs(p.z - box.min.z) < eps) return vec(0,0,-1);
+  if (Math.abs(p.z - box.max.z) < eps) return vec(0,0,1);
+  // fallback
+  return vec(0,1,0);
+}
+
+// plane intersection
 function intersectPlane(ro, rd, p){
   if (Math.abs(rd.y) < 1e-6) return null;
   const t = (p.y - ro.y) / rd.y;
   return t > 1e-4 ? t : null;
 }
 
-// trace
+// -------------------- Trace function updated to include boxes --------------------
 function trace(ro, rd, depth=0){
   let tMin = Infinity;
   let hit = null;
-  let hitType = null; // 'sphere'|'plane'
+  let hitType = null;
   let hitObj = null;
 
-  // spheres
   for (const s of spheres){
     const t = intersectSphere(ro, rd, s);
     if (t !== null && t < tMin){ tMin = t; hit = add(ro, mul(rd, t)); hitType='sphere'; hitObj=s; }
   }
-  // plane
+  for (const b of walls){
+    const t = intersectBox(ro, rd, b);
+    if (t !== null && t < tMin){ tMin = t; hit = add(ro, mul(rd, t)); hitType='box'; hitObj=b; }
+  }
   const tp = intersectPlane(ro, rd, plane);
   if (tp !== null && tp < tMin){
     tMin = tp; hit = add(ro, mul(rd, tp)); hitType='plane'; hitObj = plane;
   }
 
-  if (!hit) {
-    // sky gradient
+  if (!hit){
     const t = 0.5 * (rd.y + 1.0);
     return mix(vec(0.2,0.3,0.6), vec(0.95,0.98,1.0), clamp(t));
   }
@@ -151,10 +208,11 @@ function trace(ro, rd, depth=0){
   if (hitType==='sphere'){
     N = normalize(sub(hit, hitObj.center));
     baseColor = hitObj.color;
+  } else if (hitType==='box'){
+    N = boxNormalAt(hitObj, hit);
+    baseColor = hitObj.color;
   } else {
-    // plane normal is up
     N = vec(0,1,0);
-    // checker pattern
     const checkerScale = 1.0;
     const check = (Math.floor(hit.x/checkerScale) + Math.floor(hit.z/checkerScale)) % 2;
     baseColor = (check===0) ? hitObj.colorA : hitObj.colorB;
@@ -163,37 +221,34 @@ function trace(ro, rd, depth=0){
   // ambient
   let color = mul(baseColor, 0.06);
 
-  // lighting
+  // lighting & shadows
   for (const L of lights){
     const lightDir = normalize(sub(L.pos, hit));
-    // shadow check
     const shadowOrigin = add(hit, mul(N, 1e-4));
     let shadow = false;
-    // quick distance to light
     const distToLight = length(sub(L.pos, hit));
-    // cast shadow ray
-    // test spheres
+    // spheres
     for (const s of spheres){
       const t = intersectSphere(shadowOrigin, lightDir, s);
       if (t !== null && t < distToLight) { shadow = true; break; }
     }
-    // test plane (avoid self)
+    // boxes
+    if (!shadow){
+      for (const b of walls){
+        const t = intersectBox(shadowOrigin, lightDir, b);
+        if (t !== null && t < distToLight) { shadow = true; break; }
+      }
+    }
+    // plane
     if (!shadow){
       const tp2 = intersectPlane(shadowOrigin, lightDir, plane);
-      if (tp2 !== null && tp2 < distToLight) {
-        // if plane is below the light and between, it shadows
-        shadow = true;
-      }
+      if (tp2 !== null && tp2 < distToLight) shadow = true;
     }
     if (shadow) continue;
 
-    // diffuse
     const diff = Math.max(0, dot(N, lightDir));
-    // specular
-    const viewDir = normalize(mul(ro, -1)); // approximate view from origin direction
-    const half = normalize(add(lightDir, normalize(mul(ro, -1))));
-    const spec = Math.pow(Math.max(0, dot(N, reflect(mul(rd,-1), N))), hitType==='sphere' ? hitObj.spec/50 : 10);
-
+    const viewDir = normalize(mul(rd, -1));
+    const spec = Math.pow(Math.max(0, dot(N, reflect(mul(rd,-1), N))), (hitType==='sphere' ? hitObj.spec/50 : hitObj.spec || 10));
     const lightAtt = L.intensity / (1 + 0.12 * distToLight * distToLight);
     const lambert = mul(mul(baseColor, diff), lightAtt);
     const specCol = mul(L.color, spec * lightAtt);
@@ -201,45 +256,39 @@ function trace(ro, rd, depth=0){
     color = add(color, specCol);
   }
 
-  // reflections
-  const reflectivity = (hitType==='sphere') ? hitObj.refl : 0.0;
+  // reflections for reflective objects (spheres mostly)
+  const reflectivity = (hitType==='sphere') ? hitObj.refl : (hitType==='box' ? (hitObj.refl||0) : 0.0);
   if (reflectivity > 0 && depth < 2){
     const R = reflect(rd, N);
     const reflCol = trace(add(hit, mul(N, 1e-4)), R, depth+1);
     color = mix(color, reflCol, reflectivity);
   }
 
-  // tone mapping / clamp
   return vec(clamp(color.x), clamp(color.y), clamp(color.z));
 }
 
-// render one frame (only when camera moved or continuously)
-let lastRenderCam = null;
-let renderId = 0;
+// -------------------- Render --------------------
 let lastT = performance.now();
 let fps = 0;
 function renderFrame(){
   const imageData = ctx.createImageData(w, h);
   const data = imageData.data;
 
-  // camera basis
   const forward = vec(Math.cos(camera.pitch) * Math.sin(camera.yaw), Math.sin(camera.pitch), Math.cos(camera.pitch) * Math.cos(camera.yaw));
   const right = normalize(cross(forward, vec(0,1,0)));
   const up = normalize(cross(right, forward));
 
   const fovScale = Math.tan(camera.fov * 0.5);
-  // for each pixel
+
   let idx = 0;
   for (let j=0;j<h;j++){
     const v = (1 - 2*(j + 0.5) / h);
     for (let i=0;i<w;i++){
       const u = (2*(i + 0.5) / w - 1) * aspect;
-      // ray dir in world space
       let rd = add(add(mul(right, u * fovScale), mul(up, v * fovScale)), forward);
       rd = normalize(rd);
 
       const col = trace(camera.pos, rd, 0);
-      // gamma
       const gamma = 1/2.2;
       data[idx++] = Math.floor(255 * Math.pow(clamp(col.x), gamma));
       data[idx++] = Math.floor(255 * Math.pow(clamp(col.y), gamma));
@@ -250,39 +299,55 @@ function renderFrame(){
 
   ctx.putImageData(imageData, 0, 0);
 
-  // fps
   const now = performance.now();
   fps = Math.round(1000 / (now - lastT));
   lastT = now;
   document.getElementById('fps').textContent = fps;
 }
 
-// camera update & main loop
+// -------------------- Movement & collision --------------------
+const playerRadius = 0.23;
+function canMoveTo(pos){
+  // only check XZ collisions against inflated wall boxes
+  for (const b of walls){
+    if (pos.x >= b.min.x - playerRadius && pos.x <= b.max.x + playerRadius &&
+        pos.z >= b.min.z - playerRadius && pos.z <= b.max.z + playerRadius){
+      // also ensure Y is not far below/above (we only care near floor)
+      return false;
+    }
+  }
+  return true;
+}
+
 let last = performance.now();
 function update(){
   const now = performance.now();
   const dt = (now - last) / 1000;
   last = now;
 
-  // movement
   const speed = 3.0;
-  const forward = vec(Math.cos(camera.yaw), 0, Math.sin(camera.yaw));
-  const right = vec(Math.sin(camera.yaw + Math.PI/2), 0, Math.cos(camera.yaw + Math.PI/2));
-  if (keys['w']) camera.pos = add(camera.pos, mul(forward, speed*dt));
-  if (keys['s']) camera.pos = add(camera.pos, mul(forward, -speed*dt));
-  if (keys['a']) camera.pos = add(camera.pos, mul(right, -speed*dt));
-  if (keys['d']) camera.pos = add(camera.pos, mul(right, speed*dt));
-  if (keys[' ']) camera.pos.y += speed*dt; // space up
-  if (keys['control']) camera.pos.y -= speed*dt; // ctrl down
+  // movement relative to yaw only (so you don't fly sideways when looking up/down)
+  const fwd = vec(Math.sin(camera.yaw), 0, Math.cos(camera.yaw));
+  const rgt = vec(Math.sin(camera.yaw + Math.PI/2), 0, Math.cos(camera.yaw + Math.PI/2));
+  let move = vec(0,0,0);
+  if (keys['w']) move = add(move, mul(fwd, speed*dt));
+  if (keys['s']) move = add(move, mul(fwd, -speed*dt));
+  if (keys['a']) move = add(move, mul(rgt, -speed*dt));
+  if (keys['d']) move = add(move, mul(rgt, speed*dt));
+  const newPos = add(camera.pos, move);
+  // vertical controls
+  if (keys[' ']) newPos.y += speed*dt;
+  if (keys['control']) newPos.y -= speed*dt;
 
-  // simple animate a light
+  // collision: only apply if allowed
+  if (canMoveTo(newPos)) camera.pos = newPos;
+
+  // animate a light
   const t = performance.now() * 0.001;
   lights[0].pos.x = -5 + Math.sin(t)*2;
   lights[0].pos.z = -3 + Math.cos(t)*2;
 
-  // render
   renderFrame();
-
   requestAnimationFrame(update);
 }
 
