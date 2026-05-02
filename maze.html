@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>3D Maze Raycaster (JavaScript)</title>
+<style>
+  html,body{height:100%;margin:0;background:#111;color:#ddd;font-family:system-ui,Segoe UI,Roboto}
+  #info{position:fixed;left:12px;top:12px;z-index:2;background:rgba(0,0,0,0.4);padding:8px;border-radius:6px}
+  canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated}
+  a{color:#6cf}
+  .small{font-size:12px;color:#bbb}
+</style>
+</head>
+<body>
+<div id="info">
+  <strong>3D Maze Raycaster</strong>
+  <div class="small">WASD to move, Click to look, R to reset</div>
+  <div class="small">Resolution: <span id="res"></span> • FPS: <span id="fps"></span></div>
+</div>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let scale = 2;
+let w, h, aspect;
+function resize() {
+  w = Math.floor(window.innerWidth / scale);
+  h = Math.floor(window.innerHeight / scale);
+  canvas.width = w;
+  canvas.height = h;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  aspect = w / h;
+  document.getElementById('res').textContent = `${w}×${h} (scale ${scale})`;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ======== MAZE MAP ========
+// 0 = empty, 1~4 = colored walls
+const maze = [
+//         012345678901234
+/* 0 */  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+/* 1 */  [1,0,0,0,0,0,0,3,0,0,0,0,0,0,1],
+/* 2 */  [1,0,1,1,1,0,1,1,1,1,0,1,1,0,1],
+/* 3 */  [1,0,1,0,0,0,0,0,0,1,0,0,1,0,1],
+/* 4 */  [1,0,1,0,1,1,1,4,0,1,1,0,1,0,1],
+/* 5 */  [1,0,0,0,0,2,0,0,0,0,0,0,1,0,1],
+/* 6 */  [1,1,1,1,0,2,1,2,1,1,1,1,1,0,1],
+/* 7 */  [1,0,0,1,0,0,0,0,0,0,0,1,0,0,1],
+/* 8 */  [1,0,1,1,1,1,1,1,1,1,0,1,1,1,1],
+/* 9 */  [1,0,0,0,0,0,0,0,0,1,0,0,0,0,1],
+/*10 */  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+const MAP_W = maze[0].length, MAP_H = maze.length;
+
+// Simple wall colors based on wall type
+const WALL_COLORS = [
+  "#000", // unused
+  "#ab2323", // wall 1
+  "#1d6eb4", // wall 2
+  "#84ba0e", // wall 3
+  "#f2bc11"  // wall 4
+];
+
+// ======== CAMERA ========
+const camera = {
+  x: 2.5, y: 0.5, z: 2.5, // pos (x = right, y = up, z = forward)
+  dir: Math.PI,            // angle in radians, 0=down, PI=up
+  pitch: 0,                // up/down look, not used in this minimal version
+  fov: 70 * Math.PI/180    // field of view
+};
+
+function resetCamera() {
+  camera.x = 2.5; camera.y = 0.5; camera.z = 2.5;
+  camera.dir = Math.PI;
+  camera.pitch = 0;
+}
+
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if(e.key==='r') resetCamera(); });
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+canvas.addEventListener('click', ()=> canvas.requestPointerLock?.());
+window.addEventListener('mousemove', e => {
+  if (document.pointerLockElement === canvas) {
+    camera.dir -= e.movementX * 0.002;
+    // Optionally clamp camera.pitch (vertical look), but we'll keep pitch unused for classic style
+  }
+});
+
+// ======== HELPER ========
+function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
+
+// ======== RAYCASTING AND RENDERING ========
+
+function renderFrame() {
+  const imageData = ctx.createImageData(w, h);
+  const data = imageData.data;
+
+  for (let i = 0; i < w; i++) {
+    // For each vertical screen column
+    const screenX = 2 * (i+0.5)/w - 1;
+    const rayDir = camera.dir + screenX * camera.fov * 0.5;
+
+    // Ray start position and direction
+    let rayX = camera.x;
+    let rayZ = camera.z;
+    const dx = Math.sin(rayDir);
+    const dz = Math.cos(rayDir);
+
+    // DDA: Step through grid until we hit a wall
+    let mapX = Math.floor(rayX), mapZ = Math.floor(rayZ);
+    // Distance to next grid boundary
+    let sideDistX, sideDistZ;
+    // Distance to next X/Z crossing
+    const deltaDistX = Math.abs(1/dx);
+    const deltaDistZ = Math.abs(1/dz);
+    let stepX, stepZ;
+
+    if (dx < 0) {
+      stepX = -1;
+      sideDistX = (rayX - mapX) * deltaDistX;
+    } else {
+      stepX = 1;
+      sideDistX = (mapX + 1 - rayX) * deltaDistX;
+    }
+    if (dz < 0) {
+      stepZ = -1;
+      sideDistZ = (rayZ - mapZ) * deltaDistZ;
+    } else {
+      stepZ = 1;
+      sideDistZ = (mapZ + 1 - rayZ) * deltaDistZ;
+    }
+
+    let hit = false, side = 0, wallType = 0;
+    let distance = 0;
+    while (!hit && distance < 64) {
+      if (sideDistX < sideDistZ) {
+        mapX += stepX;
+        distance = sideDistX;
+        sideDistX += deltaDistX;
+        side = 0; // vertical wall
+      } else {
+        mapZ += stepZ;
+        distance = sideDistZ;
+        sideDistZ += deltaDistZ;
+        side = 1; // horizontal wall
+      }
+      if (mapZ >= 0 && mapZ < MAP_H && mapX >= 0 && mapX < MAP_W) {
+        wallType = maze[mapZ][mapX];
+        if (wallType > 0) hit = true;
+      } else {
+        // Ray outside world
+        hit = true;
+        distance = 64;
+        wallType = 0;
+      }
+    }
+
+    // fish-eye fix: use perpendicular ray length for projection
+    const perpDist = distance * Math.cos(rayDir - camera.dir);
+    const wallHeight = Math.floor(h / (perpDist+0.00001)); // slice height
+
+    // Draw vertical slice
+    const start = Math.floor(h/2 - wallHeight/2);
+    const end   = Math.floor(h/2 + wallHeight/2);
+    const col = wallType ? WALL_COLORS[wallType] : "#222";
+    const shade = side === 1 ? 0.7 : 1.0; // darken color on Z faces
+
+    // Sky (ceiling)
+    for (let y = 0; y < start; y++) {
+      const sky = 180 + Math.floor(70*(y/h)); // gradient blue tone
+      const idx = (y*w + i)*4;
+      data[idx] = sky;   // R
+      data[idx+1] = sky+15; // G
+      data[idx+2] = 255; // B
+      data[idx+3] = 255;
+    }
+    // Wall
+    if (wallType > 0) {
+      let rgb = col.length === 7 ?
+         [parseInt(col.slice(1,3),16),parseInt(col.slice(3,5),16),parseInt(col.slice(5,7),16)]:
+         [180,180,180];
+      for (let y = clamp(start,0,h-1); y <= clamp(end,0,h-1); y++) {
+        const idx = (y*w + i)*4;
+        data[idx] = rgb[0]*shade;
+        data[idx+1] = rgb[1]*shade;
+        data[idx+2] = rgb[2]*shade;
+        data[idx+3] = 255;
+      }
+    }
+    // Floor
+    for (let y = clamp(end,0,h-1); y < h; y++) {
+      const tone = 100 + Math.floor(50 * (y/h));
+      const idx = (y*w + i)*4;
+      data[idx] = tone;
+      data[idx+1] = tone;
+      data[idx+2] = tone+15;
+      data[idx+3] = 255;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  // FPS
+  const now = performance.now();
+  const fps = Math.round(1000 / ((now-lastT)||1));
+  lastT = now;
+  document.getElementById('fps').textContent = fps;
+}
+
+let lastT = performance.now();
+
+// ======== PLAYER CONTROL AND MAIN LOOP ========
+let last = performance.now();
+function update() {
+  const now = performance.now();
+  const dt = (now - last) / 1000;
+  last = now;
+
+  // Movement
+  let moveStep = 2.7 * dt;
+  let moveX = 0, moveZ = 0;
+  if (keys['w']) { moveX += Math.sin(camera.dir)  * moveStep; moveZ += Math.cos(camera.dir) * moveStep; }
+  if (keys['s']) { moveX -= Math.sin(camera.dir)  * moveStep; moveZ -= Math.cos(camera.dir) * moveStep; }
+  if (keys['a']) { moveX += Math.sin(camera.dir - Math.PI/2) * moveStep; moveZ += Math.cos(camera.dir - Math.PI/2) * moveStep; }
+  if (keys['d']) { moveX += Math.sin(camera.dir + Math.PI/2) * moveStep; moveZ += Math.cos(camera.dir + Math.PI/2) * moveStep; }
+
+  // Check collisions (simple: don't move into a wall)
+  const tryX = camera.x + moveX, tryZ = camera.z + moveZ;
+  if (maze[Math.floor(camera.z)][Math.floor(tryX)] === 0) camera.x = tryX;
+  if (maze[Math.floor(tryZ)][Math.floor(camera.x)] === 0) camera.z = tryZ;
+
+  renderFrame();
+  requestAnimationFrame(update);
+}
+resetCamera();
+update();
+</script>
+</body>
+</html>
